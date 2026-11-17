@@ -1,0 +1,15 @@
+# Real database password and settings stay on your own computer
+config/db.php
+.env
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Dependencies, if Composer is used
+vendor/
+
+# Uploaded files and logs
+*.log
