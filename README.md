@@ -59,3 +59,36 @@ $stmt->execute([$roomId]);
 Table names are lower case: `users`, `room_types`, `rooms`, `room_availability`, `reservations`, `payments`.
 
 Work plan and Git workflow: see `WORK_PLAN.md`.
+
+
+## Room Search Functionality
+
+The room search module allows customers to find hotel rooms based on their booking requirements.
+
+### Features
+- Search rooms using check-in and check-out dates.
+- Filter rooms by the number of guests.
+- Filter rooms by room type.
+- Display rooms that are available during the selected period.
+- Exclude rooms with existing pending or confirmed reservations.
+- Exclude rooms blocked for maintenance.
+- Display room details, capacity, descriptions and prices.
+- Calculate the total accommodation cost based on the number of nights.
+- Display a default hotel room photo for search results.
+
+### Main Files
+- `search/index.php` - Room search form.
+- `search/results.php` - Retrieves and displays available rooms.
+- `search/details.php` - Displays information about a selected room.
+- `includes/db.php` - Provides the shared database connection.
+- `assets/css/style.css` - Contains the styling for the search form and room listings.
+- `assets/images/room-default.jpg` - Default room image used in search results.
+
+### How to Use
+1. Open the Room Search page.
+2. Enter check-in and check-out dates.
+3. Select the number of guests.
+4. Optionally select a room type.
+5. Click Search Rooms.
+6. View the available rooms and their prices.
+7. Click View Details to see more information about a selected room.
