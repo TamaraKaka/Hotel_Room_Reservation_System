@@ -1,278 +1,139 @@
 <?php
 declare(strict_types=1);
-
-/*
- * User Authentication module (owner: Angela).
- * Every page that needs a login does:
- *
- *     require_once __DIR__ . '/../includes/auth.php';
- *     $user = requireLogin();            // any logged-in user
- *     $user = requireRole(ROLE_ADMIN);   // administrators only
- *
- * $user is an array: ['id' => 3, 'name' => '...', 'email' => '...', 'role' => 'Customer']
- */
-
-require_once __DIR__ . '/db.php';
-
-const ROLE_CUSTOMER   = 'Customer';
-const ROLE_ADMIN      = 'Admin';
-const REMEMBER_SECONDS = 30 * 24 * 60 * 60; // "Remember me" keeps the login for 30 days
-
-if (session_status() === PHP_SESSION_NONE) {
-    ini_set('session.gc_maxlifetime', (string) REMEMBER_SECONDS);
+/** Shared authentication helpers for the Hotel Reservation System. Local XAMPP demo. */
+if (session_status() !== PHP_SESSION_ACTIVE) {
     ini_set('session.use_strict_mode', '1');
-    session_set_cookie_params([
-        'lifetime' => 0,
-        'path'     => '/',
-        'httponly' => true,
-        'samesite' => 'Lax',
-    ]);
+    ini_set('session.cookie_httponly', '1');
+    ini_set('session.cookie_samesite', 'Lax');
     session_start();
 }
-
-/* ---------- small helpers ---------- */
-
-/** Escape text before printing it in HTML. */
-function e(?string $value): string
-{
-    return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+function authDb(): PDO {
+    static $pdo = null;
+    if ($pdo instanceof PDO) return $pdo;
+    $host = getenv('HOTEL_DB_HOST') ?: '127.0.0.1';
+    $name = getenv('HOTEL_DB_NAME') ?: 'hotel_reservation_system';
+    $user = getenv('HOTEL_DB_USER') ?: 'root';
+    $pass = getenv('HOTEL_DB_PASS') ?: '';
+    try {
+        $pdo = new PDO("mysql:host=$host;dbname=$name;charset=utf8mb4", $user, $pass, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ]);
+    } catch (PDOException $e) {
+        http_response_code(500);
+        exit('Database connection failed. Verify MySQL and import database/auth_migration.sql.');
+    }
+    return $pdo;
 }
-
-function redirect(string $path): never
-{
-    header('Location: ' . base_url($path));
+function authEscape(?string $value): string {
+    return htmlspecialchars($value ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+function authCsrf(): string {
+    if (!isset($_SESSION['auth_csrf'])) $_SESSION['auth_csrf'] = bin2hex(random_bytes(32));
+    return $_SESSION['auth_csrf'];
+}
+function authVerifyCsrf(): void {
+    if (!hash_equals(authCsrf(), (string)($_POST['csrf'] ?? ''))) {
+        http_response_code(403);
+        exit('Security check failed. Refresh this page and try again.');
+    }
+}
+function authFlash(string $type, string $message): void {
+    $_SESSION['auth_flash'] = ['type'=>$type, 'message'=>$message];
+}
+function authGetFlash(): ?array {
+    $f = $_SESSION['auth_flash'] ?? null;
+    unset($_SESSION['auth_flash']);
+    return $f;
+}
+function authUrl(string $suffix): string {
+    // The project directory is the parent of auth/, customers/, admin/ or rooms/.
+    $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/Hotel_Room_Reservation_System/auth/login.php'));
+    $base = preg_replace('~/(auth|customers|admin|rooms)(/.*)?$~', '/', $script);
+    $base = $base ?: '/Hotel_Room_Reservation_System/';
+    return rtrim($base, '/') . '/' . ltrim($suffix, '/');
+}
+function authGo(string $suffix): never {
+    header('Location: ' . authUrl($suffix), true, 303);
     exit;
 }
-
-function flash(string $type, string $message): void
-{
-    $_SESSION['flash'][] = ['type' => $type, 'msg' => $message];
+function authCookiePath(): string {
+    return authUrl('');
 }
-
-function takeFlash(): array
-{
-    $messages = $_SESSION['flash'] ?? [];
-    unset($_SESSION['flash']);
-    return $messages;
-}
-
-/* ---------- CSRF protection for every POST form ---------- */
-
-function csrfToken(): string
-{
-    if (empty($_SESSION['csrf'])) {
-        $_SESSION['csrf'] = bin2hex(random_bytes(32));
+function authCurrentUser(): ?array {
+    if (!isset($_SESSION['auth_user_id'])) authTryRemember();
+    $id = (int)($_SESSION['auth_user_id'] ?? 0);
+    if ($id < 1) return null;
+    $q = authDb()->prepare('SELECT id, full_name, email, role, is_active FROM Customers WHERE id = ?');
+    $q->execute([$id]);
+    $user = $q->fetch();
+    if (!$user || (int)$user['is_active'] !== 1) {
+        unset($_SESSION['auth_user_id']);
+        return null;
     }
-    return $_SESSION['csrf'];
-}
-
-function csrfField(): string
-{
-    return '<input type="hidden" name="csrf" value="' . e(csrfToken()) . '">';
-}
-
-function csrfValid(): bool
-{
-    $sent = $_POST['csrf'] ?? '';
-    return is_string($sent) && hash_equals($_SESSION['csrf'] ?? '', $sent);
-}
-
-/* ---------- who is logged in ---------- */
-
-function currentUser(): ?array
-{
-    return $_SESSION['user'] ?? null;
-}
-
-function homePathFor(string $role): string
-{
-    $config = app_config();
-    return $role === ROLE_ADMIN
-        ? ($config['admin_home'] ?? 'auth/home.php')
-        : ($config['customer_home'] ?? 'auth/home.php');
-}
-
-function redirectToHome(array $user): never
-{
-    redirect(homePathFor($user['role']));
-}
-
-/**
- * Stops the page unless someone is logged in.
- * It also re-checks the database, so a customer deactivated by an admin
- * is logged out on their next click.
- */
-function requireLogin(): array
-{
-    $user = currentUser();
-    if ($user === null) {
-        flash('error', 'Please log in to continue.');
-        redirect('auth/login.php');
-    }
-
-    $stmt = db()->prepare('SELECT is_active FROM users WHERE user_id = ?');
-    $stmt->execute([$user['id']]);
-    $row = $stmt->fetch();
-    if (!$row || (int) $row['is_active'] !== 1) {
-        $_SESSION = [];
-        flash('error', 'Your account is not active. Please contact the hotel.');
-        redirect('auth/login.php');
-    }
-
     return $user;
 }
-
-/** Stops the page unless the logged-in user has the given role. */
-function requireRole(string $role): array
-{
+function requireLogin(): array {
+    $user = authCurrentUser();
+    if (!$user) authGo('auth/login.php');
+    return $user;
+}
+function requireRole(string $role): array {
     $user = requireLogin();
     if ($user['role'] !== $role) {
         http_response_code(403);
-        exit('<h1>403 Forbidden</h1><p>You do not have permission to open this page.</p>');
+        exit('Access denied. This page requires the ' . authEscape($role) . ' role.');
     }
     return $user;
 }
-
-function loginUser(array $row, bool $remember): void
-{
-    session_regenerate_id(true); // new session id after login blocks session fixation
-    $_SESSION['user'] = [
-        'id'    => (int) $row['user_id'],
-        'name'  => $row['full_name'],
-        'email' => $row['email'],
-        'role'  => $row['role'],
+function authLogIn(int $userId): void {
+    session_regenerate_id(true);
+    $_SESSION['auth_user_id'] = $userId;
+}
+function authCookieOptions(int $expires): array {
+    return [
+        'expires' => $expires, 'path' => authCookiePath(),
+        'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        'httponly' => true, 'samesite' => 'Lax',
     ];
-
-    if ($remember) {
-        setcookie(session_name(), session_id(), [
-            'expires'  => time() + REMEMBER_SECONDS,
-            'path'     => '/',
-            'httponly' => true,
-            'samesite' => 'Lax',
-        ]);
-    }
 }
-
-function logoutUser(): void
-{
-    $_SESSION = [];
-    setcookie(session_name(), '', ['expires' => time() - 3600, 'path' => '/']);
-    session_destroy();
-    session_start(); // fresh session so we can show "You have been logged out"
-}
-
-/* ---------- login ---------- */
-
-/**
- * Checks an email and password.
- * Returns ['ok' => true, 'user' => row] or ['ok' => false, 'error' => message].
- */
-function attemptLogin(string $email, string $password): array
-{
-    $stmt = db()->prepare(
-        'SELECT user_id, full_name, email, password_hash, role, is_active FROM users WHERE email = ?'
-    );
-    $stmt->execute([strtolower(trim($email))]);
-    $row = $stmt->fetch();
-
-    // Same message for "no such email" and "wrong password" so nobody can probe for accounts.
-    if (!$row || !password_verify($password, $row['password_hash'])) {
-        return ['ok' => false, 'error' => 'Invalid email or password.'];
-    }
-    if ((int) $row['is_active'] !== 1) {
-        return ['ok' => false, 'error' => 'Your account has been deactivated. Please contact the hotel.'];
-    }
-    return ['ok' => true, 'user' => $row];
-}
-
-/* ---------- registration ---------- */
-
-/**
- * Validates the registration form.
- * Returns [errors, clean]: errors is field => message (empty when all is fine).
- */
-function validateRegistration(array $in): array
-{
-    $errors = [];
-
-    $name     = trim((string) ($in['full_name'] ?? ''));
-    $email    = strtolower(trim((string) ($in['email'] ?? '')));
-    $phoneRaw = preg_replace('/[\s\-]/', '', (string) ($in['phone'] ?? ''));
-    $password = (string) ($in['password'] ?? '');
-    $confirm  = (string) ($in['confirm_password'] ?? '');
-
-    if (mb_strlen($name) < 2 || mb_strlen($name) > 100) {
-        $errors['full_name'] = 'Enter your full name (2 to 100 characters).';
-    } elseif (!preg_match("/^[\p{L}][\p{L}\s.'\-]*$/u", $name)) {
-        $errors['full_name'] = 'Names can only contain letters, spaces, dots, apostrophes and hyphens.';
-    }
-
-    if ($email === '' || mb_strlen($email) > 100 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors['email'] = 'Enter a valid email address.';
-    }
-
-    // Kenyan mobile numbers: 07XXXXXXXX, 01XXXXXXXX, +2547XXXXXXXX or 2547XXXXXXXX
-    $phone = '';
-    if (preg_match('/^(?:\+254|254|0)([17]\d{8})$/', $phoneRaw, $m)) {
-        $phone = '+254' . $m[1];
-    } else {
-        $errors['phone'] = 'Enter a valid Kenyan phone number, e.g. 0712 345 678.';
-    }
-
-    if (strlen($password) < 8) {
-        $errors['password'] = 'Use at least 8 characters.';
-    } elseif (strlen($password) > 72) {
-        $errors['password'] = 'Use 72 characters or fewer.';
-    } elseif (!preg_match('/[A-Za-z]/', $password) || !preg_match('/\d/', $password)) {
-        $errors['password'] = 'Include at least one letter and one number.';
-    }
-
-    if (!isset($errors['password']) && $password !== $confirm) {
-        $errors['confirm_password'] = 'The two passwords do not match.';
-    }
-
-    return [$errors, [
-        'full_name' => $name,
-        'email'     => $email,
-        'phone'     => $phone,
-        'password'  => $password,
-    ]];
-}
-
-function emailExists(string $email): bool
-{
-    $stmt = db()->prepare('SELECT 1 FROM users WHERE email = ?');
-    $stmt->execute([$email]);
-    return (bool) $stmt->fetchColumn();
-}
-
-/**
- * Saves a new customer. Returns '' on success or 'email_taken'.
- * The role is always Customer, so nobody can register themselves as an administrator.
- */
-function registerUser(array $clean): string
-{
-    if (emailExists($clean['email'])) {
-        return 'email_taken';
-    }
-
-    try {
-        $stmt = db()->prepare(
-            'INSERT INTO users (full_name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)'
-        );
-        $stmt->execute([
-            $clean['full_name'],
-            $clean['email'],
-            $clean['phone'],
-            password_hash($clean['password'], PASSWORD_DEFAULT),
-            ROLE_CUSTOMER,
-        ]);
-    } catch (PDOException $ex) {
-        // Two people registering the same email at the same moment hit the UNIQUE rule.
-        if ($ex->getCode() === '23000') {
-            return 'email_taken';
+function authForgetRememberCookie(): void {
+    $cookie = $_COOKIE['hotel_remember'] ?? '';
+    if (is_string($cookie) && str_contains($cookie, ':')) {
+        $selector = explode(':', $cookie, 2)[0];
+        if (preg_match('/^[a-f0-9]{24}$/', $selector)) {
+            $q = authDb()->prepare('DELETE FROM Auth_Remember_Tokens WHERE selector = ?');
+            $q->execute([$selector]);
         }
-        throw $ex;
     }
-    return '';
+    setcookie('hotel_remember', '', authCookieOptions(time() - 3600));
+    unset($_COOKIE['hotel_remember']);
+}
+function authSetRemember(int $userId): void {
+    authForgetRememberCookie();
+    $selector = bin2hex(random_bytes(12));
+    $validator = bin2hex(random_bytes(32));
+    $expiry = time() + 60 * 60 * 24 * 14; // 14 days
+    $q = authDb()->prepare('INSERT INTO Auth_Remember_Tokens (customer_id, selector, validator_hash, expires_at) VALUES (?,?,?,?)');
+    $q->execute([$userId, $selector, hash('sha256', $validator), date('Y-m-d H:i:s', $expiry)]);
+    setcookie('hotel_remember', $selector . ':' . $validator, authCookieOptions($expiry));
+}
+function authTryRemember(): void {
+    $cookie = $_COOKIE['hotel_remember'] ?? '';
+    if (!is_string($cookie) || !preg_match('/^([a-f0-9]{24}):([a-f0-9]{64})$/', $cookie, $m)) return;
+    $q = authDb()->prepare('SELECT t.customer_id, t.validator_hash FROM Auth_Remember_Tokens t JOIN Customers c ON c.id=t.customer_id WHERE t.selector=? AND t.expires_at > NOW() AND c.is_active=1');
+    $q->execute([$m[1]]);
+    $row = $q->fetch();
+    if (!$row || !hash_equals($row['validator_hash'], hash('sha256', $m[2]))) {
+        authForgetRememberCookie();
+        return;
+    }
+    authLogIn((int)$row['customer_id']);
+    authSetRemember((int)$row['customer_id']); // Rotate token after use.
+}
+function authLogout(): void {
+    authForgetRememberCookie();
+    unset($_SESSION['auth_user_id']);
+    session_regenerate_id(true);
 }
