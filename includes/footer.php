@@ -5,6 +5,11 @@
     <div class="footer-content">
 
         <div class="footer-section">
+            <h3>HOTELHUB</h3>
+            <p>
+                Experience comfort, elegance and exceptional hospitality.
+                Your perfect stay begins with us.
+            </p>
 
             <h3>Hotel Reservation</h3>
 
@@ -20,6 +25,8 @@
             <h3>Quick Links</h3>
 
             <ul>
+                <li><a href="/hotel-reservation-system/auth/home.php">Dashboard</a></li>
+                <li><a href="/hotel-reservation-system/search/index.php">Search Rooms</a></li>
 
                 <li>
                     <a href="<?= htmlspecialchars(base_url('search/')) ?>">
@@ -52,6 +59,7 @@
         <div class="footer-section">
 
             <h3>Contact Us</h3>
+            <p>Email: info@hotelhub.com</p>
 
             <p>Email: info@hotelreservation.com</p>
 
@@ -62,6 +70,8 @@
     </div>
 
     <div class="footer-bottom">
+        <p>&copy; <?= date('Y') ?> HotelHub. All rights reserved.</p>
+        <p>Making every stay memorable.</p>
 
         <p>
             &copy; <?= date('Y') ?>

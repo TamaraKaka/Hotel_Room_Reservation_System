@@ -50,7 +50,10 @@ function authGetFlash(): ?array {
 function authUrl(string $suffix): string {
     // The project directory is the parent of auth/, customers/, admin/ or rooms/.
     $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/Hotel_Room_Reservation_System/auth/login.php'));
-    $base = preg_replace('~/(auth|customers|admin|rooms)(/.*)?$~', '/', $script);
+    $base = preg_replace(
+    '~/(auth|customers|admin|rooms|reservations|payments|reports|search)(/.*)?$~',
+    '/',
+    $script);
     $base = $base ?: '/Hotel_Room_Reservation_System/';
     return rtrim($base, '/') . '/' . ltrim($suffix, '/');
 }

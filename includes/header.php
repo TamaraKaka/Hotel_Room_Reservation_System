@@ -1,4 +1,6 @@
 <?php
+$pageTitle = $pageTitle ?? "HotelHub";
+$baseUrl = '/hotel-reservation-system';
 declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
@@ -15,7 +17,9 @@ $pageTitle = $pageTitle ?? 'Hotel Reservation System';
     <meta charset="UTF-8">
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= htmlspecialchars($pageTitle) ?> | HotelHub</title>
 
+    <link rel="stylesheet" href="<?= $baseUrl ?>/assets/css/style.css">
     <title>
         <?= htmlspecialchars($pageTitle) ?>
     </title>
@@ -29,6 +33,10 @@ $pageTitle = $pageTitle ?? 'Hotel Reservation System';
 
 <body>
 
+<header class="navbar">
+    <a href="<?= $baseUrl ?>/auth/home.php" class="logo">
+        HOTEL<span>HUB</span>
+    </a>
 <header>
 
     <nav class="navbar">
@@ -75,8 +83,16 @@ $pageTitle = $pageTitle ?? 'Hotel Reservation System';
 
         </div>
 
+    <nav class="nav-links">
+        <a href="<?= $baseUrl ?>/auth/home.php">Dashboard</a>
+        <a href="<?= $baseUrl ?>/search/index.php">Search Rooms</a>
     </nav>
 
+    <div class="nav-actions">
+        <a href="<?= $baseUrl ?>/auth/home.php" class="login-btn">
+            My Account
+        </a>
+    </div>
 </header>
 
 <main class="container">
