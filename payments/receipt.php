@@ -1,173 +1,198 @@
+
 <?php
-declare(strict_types=1);
 
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/payment_functions.php';
 
+// Require a logged-in user.
 $user = requireLogin();
 
-$pageTitle = 'Payment Receipt';
+// Validate payment ID.
+$paymentId = filter_input(
+    INPUT_GET,
+    'payment_id',
+    FILTER_VALIDATE_INT
+);
 
-$paymentId = (int) ($_GET['id'] ?? 0);
-
-if ($paymentId <= 0) {
-    flash('error', 'Invalid payment selected.');
-    redirect('reservations/my-reservations.php');
+if (!$paymentId || $paymentId <= 0) {
+    http_response_code(400);
+    exit('Invalid payment ID.');
 }
 
-// Retrieve payment and reservation details.
-$stmt = db()->prepare("
-    SELECT
-        payments.payment_id,
-        payments.reservation_id,
-        payments.amount,
-        payments.payment_method,
-        payments.payment_date,
-        payments.receipt_number,
-        payments.status,
+// Retrieve payment details.
+$stmt = db()->prepare(
+    'SELECT
+        payment_id,
+        reservation_id,
+        receipt_number,
+        amount,
+        payment_method,
+        payment_date,
+        payment_status
+     FROM payments
+     WHERE payment_id = ?'
+);
 
-        reservations.total_amount,
-        reservations.check_in_date,
-        reservations.check_out_date
-
-    FROM payments
-
-    INNER JOIN reservations
-        ON payments.reservation_id = reservations.reservation_id
-
-    WHERE payments.payment_id = :payment_id
-    AND reservations.user_id = :user_id
-");
-
-$stmt->execute([
-    ':payment_id' => $paymentId,
-    ':user_id' => $user['id']
-]);
+$stmt->execute([$paymentId]);
 
 $payment = $stmt->fetch();
 
 if (!$payment) {
-    flash('error', 'Payment receipt not found.');
-    redirect('reservations/my-reservations.php');
+    http_response_code(404);
+    exit('Receipt not found.');
 }
 
-require_once __DIR__ . '/../includes/header.php';
+// Do not display receipts for unsuccessful payments.
+if ($payment['payment_status'] !== 'successful') {
+    http_response_code(403);
+    exit('A receipt is available only for successful payments.');
+}
+
+// TODO: Verify that this payment belongs to the logged-in
+// customer, or require an administrator role, once the
+// reservation ownership contract is available.
+
 ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<section class="section">
+    <title>Payment Receipt</title>
 
-    <div class="container">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f9;
+            padding: 30px;
+            color: #333;
+        }
 
-        <h2>Payment Receipt</h2>
+        .receipt {
+            max-width: 600px;
+            margin: auto;
+            background: white;
+            padding: 35px;
+            border-radius: 10px;
+            box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+        }
 
-        <p>
-            Payment information for your reservation.
-        </p>
+        h1 {
+            text-align: center;
+            color: #243b53;
+        }
 
-        <div class="card">
+        .receipt-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+            padding: 13px 0;
+            border-bottom: 1px solid #ddd;
+        }
 
-            <div class="card-body">
+        .receipt-row strong {
+            text-align: right;
+            overflow-wrap: anywhere;
+        }
 
-                <h3>
-                    Receipt: <?= e($payment['receipt_number']) ?>
-                </h3>
+        .status {
+            color: #16803c;
+            font-weight: bold;
+        }
 
-                <hr>
+        .print-button {
+            display: block;
+            margin: 25px auto 0;
+            padding: 12px 25px;
+            background: #243b53;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
 
-                <h4>Payment Information</h4>
+        @media print {
+            body {
+                background: white;
+                padding: 0;
+            }
 
-                <p>
-                    <strong>Payment ID:</strong>
-                    <?= (int) $payment['payment_id'] ?>
-                </p>
+            .receipt {
+                box-shadow: none;
+            }
 
-                <p>
-                    <strong>Reservation ID:</strong>
-                    <?= (int) $payment['reservation_id'] ?>
-                </p>
+            .print-button {
+                display: none;
+            }
+        }
+    </style>
+</head>
 
-                <p>
-                    <strong>Amount:</strong>
-                    KSh <?= number_format(
-                        (float) $payment['amount'],
-                        2
-                    ) ?>
-                </p>
+<body>
 
-                <p>
-                    <strong>Payment Method:</strong>
-                    <?= e($payment['payment_method']) ?>
-                </p>
+<div class="receipt">
 
-                <p>
-                    <strong>Payment Date:</strong>
-                    <?= e($payment['payment_date']) ?>
-                </p>
+    <h1>Payment Receipt</h1>
 
-                <p>
-                    <strong>Payment Status:</strong>
-                    <?= e($payment['status']) ?>
-                </p>
+    <p style="text-align:center;">
+        Thank you for your payment.
+    </p>
 
-                <hr>
-
-                <h4>Reservation Information</h4>
-
-                <p>
-                    <strong>Check-in:</strong>
-                    <?= e($payment['check_in_date']) ?>
-                </p>
-
-                <p>
-                    <strong>Check-out:</strong>
-                    <?= e($payment['check_out_date']) ?>
-                </p>
-
-                <p>
-                    <strong>Total Reservation Cost:</strong>
-                    KSh <?= number_format(
-                        (float) $payment['total_amount'],
-                        2
-                    ) ?>
-                </p>
-
-                <hr>
-
-                <?php if ($payment['status'] === 'Pending'): ?>
-
-                    <div class="alert alert-warning">
-                        Your payment is awaiting administrator verification.
-                    </div>
-
-                <?php elseif ($payment['status'] === 'Paid'): ?>
-
-                    <div class="alert alert-success">
-                        Your payment has been verified successfully.
-                    </div>
-
-                <?php endif; ?>
-
-                <button
-                    onclick="window.print()"
-                    class="btn btn-primary"
-                >
-                    Print Receipt
-                </button>
-
-                <a
-                    href="<?= e(base_url('reservations/my-reservations.php')) ?>"
-                    class="btn btn-secondary"
-                >
-                    Back to My Reservations
-                </a>
-
-            </div>
-
-        </div>
-
+    <div class="receipt-row">
+        <span>Receipt Number</span>
+        <strong>
+            <?= htmlspecialchars($payment['receipt_number']) ?>
+        </strong>
     </div>
 
-</section>
+    <div class="receipt-row">
+        <span>Payment ID</span>
+        <strong>
+            <?= (int) $payment['payment_id'] ?>
+        </strong>
+    </div>
 
-<?php
-require_once __DIR__ . '/../includes/footer.php';
-?>
+    <div class="receipt-row">
+        <span>Reservation ID</span>
+        <strong>
+            <?= (int) $payment['reservation_id'] ?>
+        </strong>
+    </div>
+
+    <div class="receipt-row">
+        <span>Amount Paid</span>
+        <strong>
+            <?= number_format((float) $payment['amount'], 2) ?>
+        </strong>
+    </div>
+
+    <div class="receipt-row">
+        <span>Payment Method</span>
+        <strong>
+            <?= htmlspecialchars($payment['payment_method']) ?>
+        </strong>
+    </div>
+
+    <div class="receipt-row">
+        <span>Payment Date</span>
+        <strong>
+            <?= htmlspecialchars($payment['payment_date']) ?>
+        </strong>
+    </div>
+
+    <div class="receipt-row">
+        <span>Payment Status</span>
+        <strong class="status">
+            <?= htmlspecialchars(ucfirst($payment['payment_status'])) ?>
+        </strong>
+    </div>
+
+    <button class="print-button" onclick="window.print()">
+        Print Receipt
+    </button>
+
+</div>
+
+</body>
+</html>
